@@ -82,6 +82,47 @@ export async function startDeviceGrant({ clientName, installationId } = {}) {
   }
 }
 
+/**
+ * 从用户粘回来的内容里认登录码。三种形态都认：
+ *   · 完整 URL（批准页 /activate?code=…，或登录成功页 …?code=…&state=…）
+ *   · 裸码 AB12-CD34（大小写、空格、连字符都容忍）
+ *   · 空 —— 什么都不提供，交给轮询等批准
+ *
+ * 认出的码和本次的 user_code 不一致时**不报错**：用户可能是在另一台设备上新
+ * 发起了一次登录。批准状态最终由服务端轮询决定（device-token），所以这里猜错
+ * 不会造成误登录，只会在那个码确实无效时由 pollForKey 说「已过期」。
+ *
+ * @param {string} text 用户粘贴的内容
+ * @param {{userCode?: string}} [grant] 本次设备码
+ * @returns {{userCode?: string, wrongCode?: string}}
+ */
+export function extractDeviceInput(text, grant = {}) {
+  const raw = String(text ?? "").trim()
+  if (!raw) return {}
+  const norm = (s) => String(s).toUpperCase().replace(/[^A-Z0-9]/g, "")
+
+  let found = ""
+  if (/^https?:\/\//i.test(raw) || raw.includes("code=")) {
+    const m = raw.match(/[?&#](?:code|user_code|userCode|device_code)=([^&\s#]+)/i)
+    if (m) found = decodeURIComponent(m[1])
+    if (!found) {
+      const inPath = raw.match(/\/activate\/([A-Za-z0-9-]{4,})/)
+      if (inPath) found = inPath[1]
+    }
+  } else {
+    found = raw
+  }
+
+  const cleaned = String(found || "").trim()
+  if (!cleaned) return {}
+  // 只认像登录码的东西：字母数字 + 连字符，4~32 位。device_code 那种 64 位 hex 不算码。
+  if (!/^[A-Za-z0-9][A-Za-z0-9-]{3,31}$/.test(cleaned)) return {}
+  if (grant?.userCode && norm(cleaned) !== norm(grant.userCode)) {
+    return { userCode: cleaned, wrongCode: cleaned }
+  }
+  return { userCode: cleaned }
+}
+
 /** 用户批准页地址（隔离浏览器打开这个，不碰默认浏览器）。 */
 export function approvalUrl(userCode) {
   return `${SITE_URL}/activate?code=${encodeURIComponent(String(userCode || ""))}`

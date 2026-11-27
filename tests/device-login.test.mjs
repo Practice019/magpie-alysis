@@ -10,7 +10,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { approvalUrl, pollForKey, startDeviceGrant, openIsolatedBrowser } from "../src/device-login.mjs"
+import { approvalUrl, pollForKey, startDeviceGrant, openIsolatedBrowser, extractDeviceInput } from "../src/device-login.mjs"
 
 function stubFetch(handler) {
   const original = globalThis.fetch
@@ -26,6 +26,28 @@ function jsonResponse(body, status = 200) {
     headers: { "content-type": "application/json" },
   })
 }
+
+// magpie 常常跑在无头的 Linux 上，用户手上是 Windows：登录只能在别处完成，
+// 再把回调 URL 粘回来。这一步只认「码」，批准与否一律由服务端轮询决定。
+test("extractDeviceInput：从回调 URL / 裸码里认登录码，空输入不猜", () => {
+  const grant = { userCode: "SY8N-K4GC" }
+  assert.deepEqual(extractDeviceInput("", grant), {}, "空输入不能编一个码出来")
+  assert.deepEqual(extractDeviceInput("   ", grant), {})
+  assert.deepEqual(extractDeviceInput("https://alysiscode.com/activate?code=SY8N-K4GC", grant), { userCode: "SY8N-K4GC" })
+  assert.deepEqual(extractDeviceInput("https://alysiscode.com/login/success?code=sy8n-k4gc&state=x", grant), {
+    userCode: "sy8n-k4gc",
+  }, "成功页里的码大小写不同也算同一个，不能再报 wrongCode")
+  assert.deepEqual(extractDeviceInput("SY8N-K4GC", grant), { userCode: "SY8N-K4GC" }, "裸码也认")
+})
+
+test("extractDeviceInput：别处的码如实回报，不静默改写；不像码的东西一律忽略", () => {
+  const grant = { userCode: "SY8N-K4GC" }
+  assert.deepEqual(extractDeviceInput("AB12-CD34", grant), { userCode: "AB12-CD34", wrongCode: "AB12-CD34" })
+  assert.deepEqual(extractDeviceInput("https://x/activate/Zz99-Pp11", grant), { userCode: "Zz99-Pp11", wrongCode: "Zz99-Pp11" })
+  // 64 位 hex 是 device_code，不是 user_code；粘错了不能当码用
+  assert.deepEqual(extractDeviceInput("a".repeat(64), grant), {})
+  assert.deepEqual(extractDeviceInput("https://alysiscode.com/login", grant), {}, "没有 code 参数的页面不算")
+})
 
 test("approvalUrl：带 code 且做 URL 编码，指向 activate 页", () => {
   assert.equal(approvalUrl("AB-12"), "https://alysiscode.com/activate?code=AB-12")
