@@ -123,7 +123,61 @@ export function extractDeviceInput(text, grant = {}) {
   return { userCode: cleaned }
 }
 
+
+/**
+ * 认用户粘回来的回调 —— 与小浣熊插件同一口径（`parseCallbackInput`）：
+ *
+ *   · 完整回调 URL（含 `?code=…&state=…`）
+ *   · 只给一段 code
+ *   · 直接给 `slk_` 开头的 key（等价于「已登录」，跳过换取）
+ *
+ * state 必须与本次一致才认；不一致直接报错，而不是静默拿 out 里面的 code 去换。
+ * 这条是 OAuth 的安全边界：回调是公开入口，谁都能往这个地址打。
+ *
+ * @param {string} input 用户粘贴的内容
+ * @param {string} expectedState 本次 authorize 生成的 state
+ * @returns {{code: string} | {direct: {access: string}}}
+ */
+export function parseCallbackInput(input, expectedState = "") {
+  const raw = String(input ?? "").trim()
+  if (!raw) throw new Error("请粘贴回调链接或授权码")
+  if (raw.length > 8192) throw new Error("粘贴的内容过长，不像是回调链接")
+
+  // 直接给 key：本机客户端已经登录过的人可以走这条
+  if (/^slk_[A-Za-z0-9_-]{8,}$/.test(raw)) return { direct: { access: raw } }
+
+  const looksLikeUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) || raw.includes("code=")
+  if (!looksLikeUrl) {
+    // 裸码也认：网页有时只把 code 显示/复制出来。形态足够像码才收（太短的
+    // 一段文字很可能是用户误粘，那还不如让他把整条链接粘全）。
+    const bare = raw.replace(/\s+/g, "")
+    if (/^[A-Za-z0-9._~-]{8,512}$/.test(bare)) return { code: bare }
+    throw new Error("认不出这段内容：请粘贴整条回调链接（带 code=… 的那条）")
+  }
+
+  let url
+  try {
+    url = new URL(raw, SITE_URL)
+  } catch {
+    throw new Error("无法解析这段链接，请粘贴完整地址")
+  }
+  const code = url.searchParams.get("code") || ""
+  const states = url.searchParams.getAll("state")
+  if (expectedState) {
+    if (states.length !== 1) throw new Error("回调缺少 state，可能不属于本次登录")
+    if (states[0] !== expectedState) throw new Error("回调不属于本次登录，请回到授权页重新登录")
+  }
+  if (!code) {
+    const err = url.searchParams.get("error")
+    if (err) throw new Error(`授权被拒绝：${err}${url.searchParams.get("error_description") ? `（${url.searchParams.get("error_description")}）` : ""}`)
+    throw new Error("回调里没有 code")
+  }
+  if (code.length > 4096) throw new Error("code 过长，不像是有效的授权码")
+  return { code }
+}
+
 /** 用户批准页地址（隔离浏览器打开这个，不碰默认浏览器）。 */
+
 export function approvalUrl(userCode) {
   return `${SITE_URL}/activate?code=${encodeURIComponent(String(userCode || ""))}`
 }

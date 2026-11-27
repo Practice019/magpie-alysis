@@ -60,7 +60,7 @@ import { usage as buildUsage, usageWindow } from "./src/quota.mjs"
 import { USER_AGENT } from "./src/context.mjs"
 import { createRefreshLock } from "./src/refresh-lock.mjs"
 import { createUsageCache } from "./src/usage-cache.mjs"
-import { startDeviceGrant, approvalUrl, pollForKey, openIsolatedBrowser, extractDeviceInput } from "./src/device-login.mjs"
+import { startDeviceGrant, approvalUrl, pollForKey, openIsolatedBrowser } from "./src/device-login.mjs"
 
 // ── 配置 ──────────────────────────────────────────────────────────────
 
@@ -181,6 +181,26 @@ function fingerprint(key) {
   return crypto.createHash("sha256").update(String(key)).digest("hex").slice(0, 12)
 }
 
+
+/** 网页登录入口：只用于给用户一条可以自己打开的地址。 */
+function buildLoginUrl() {
+  const u = new URL("https://alysiscode.com/login")
+  u.searchParams.set("lang", "auto")
+  return u.toString()
+}
+
+/** 登录成功后的统一返回形状（与另外两条登录方式一致）。 */
+async function successAuth(key) {
+  if (!/^slk_/.test(String(key ?? ""))) return { type: "failed", error: "服务端返回的 key 不是 slk_ 开头，拒绝保存" }
+  return {
+    type: "success",
+    access: key,
+    refresh: key,
+    expires: Date.now() + 365 * 24 * 3600 * 1000,
+    accountId: await resolveAccountId(key),
+    uid: fingerprint(key),
+  }
+}
 /** 调 account-status 拿卡片上显示的账号名（失败返回空串，绝不编造）。 */
 async function resolveAccountId(key) {
   if (!key) return ""
@@ -412,56 +432,32 @@ export const AlysisAuthPlugin = async (_ctx, _options) => {
         },
       },
 
-      // ③ 远程批准（谁在哪台机器登录都行）—— 本机不需要浏览器、不需要图形界面。
+      // ③ 手工完成设备码批准（照小浣熊插件的 manualSignIn 做法：本机不起浏览器）。
       //
-      // 为什么这条最重要：magpie 常常跑在无头的 Linux 服务器上，而用户手上是
-      // Windows / Mac。前两条路要么读本机客户端、要么在本机开 Chromium，在那种
-      // 机器上都是死的。设备码（RFC 8628）不依赖任何本机状态：
-      //   ① 本机拿一个 user_code；
-      //   ② 用户在任何一台有浏览器的机器上打开批准页、登录、批准；
-      //   ③ 服务端那边已经是 approved，本机轮询即可取到 key。
-      // 第 ② 步完成的地方会落到 /login/success 之类的页面，用户把那一串 URL
-      // 粘回来也行 —— 我们只从里面认 code，批准状态仍以服务端轮询结果为准，
-      // 所以粘错页面不会被误当成成功。
+      // 为什么需要它：magpie 常常跑在无头 Linux 上，浏览器在用户的 Windows 机器上。
+      // 「隔离浏览器」那条路要在本机开 Chromium，那种机器上没有；而设备码流程没有
+      // 「网页 code 换 key」的端点（实测 /login/exchange、/oauth/token 都是 404，
+      // 只有 /device-token 可用），所以网页登录本身不能直接产出 key。
+      // 可行的路径是：本机拿 code → 用户在任意设备批准 → 本机轮询 device-token 取 key。
       {
         type: "oauth",
-        label: `在任意设备的浏览器上批准（${PROVIDER_NAME}）`,
+        label: `手工批准登录码（${PROVIDER_NAME}）`,
 
         async authorize() {
-          // 铁律 2：立刻返回。真正的等待在 callback 里。
+          // 铁律 2：立刻返回。码在 callback 里才生成。
           return {
+            url: buildLoginUrl(),
             method: "auto",
-            opened: true, // 不要让 magpie 打开本机浏览器 —— 本机可能根本没有
+            opened: true, // 本机可能没有浏览器，别让 magpie 在本机打开
             instructions:
-              "点继续后会生成一个登录码。把这个码复制到任意一台有浏览器的设备（Windows / Mac / 手机都行）打开 https://alysiscode.com/activate ，用 Alysis Code 账号登录并批准。批准完成后如果浏览器跳转到了类似 /login/success 的页面，把整条 URL 粘回下一步的输入框即可；不粘也行，批准状态会自动查到。",
-            async callback(code, ctx = {}) {
+              "点继续后会生成一个登录码。把码复制到任意一台有浏览器的设备（Windows / Mac / 手机都行），打开 https://alysiscode.com/activate 登录并批准。批准由服务端判定，本机不需要浏览器，批准后自动完成。",
+            async callback() {
               try {
                 const grant = await startDeviceGrant()
-                // 用户粘回来的可能是「显示登录码的那一步」，也可能是「批准完成
-                // 后的成功页」。两种都只用来**核对/替换**码，批准与否仍以服务端
-                // 轮询为准 —— 粘错页面不会被误当成登录成功。
-                const pastedText = String(code ?? ctx?.code ?? "").trim()
-                const pasted = extractDeviceInput(pastedText, grant)
-                if (pasted.userCode && pasted.wrongCode) {
-                  // 形态是个码，但不是本次的：用户可能已在别的设备上另起了一次
-                  // 登录。用它去问服务端，比直接判失败更有用。
-                  grant.userCode = pasted.userCode
-                }
-
                 const key = await pollForKey(grant)
-                if (!/^slk_/.test(key)) {
-                  return { type: "failed", error: "服务端返回的 key 不是 slk_ 开头，拒绝保存" }
-                }
-                return {
-                  type: "success",
-                  access: key,
-                  refresh: key,
-                  expires: Date.now() + 365 * 24 * 3600 * 1000,
-                  accountId: await resolveAccountId(key),
-                  uid: fingerprint(key),
-                }
+                return await successAuth(key)
               } catch (e) {
-                return { type: "failed", error: `远程批准登录失败：${e?.message ?? e}` }
+                return { type: "failed", error: `手工批准登录失败：${e?.message ?? e}` }
               }
             },
           }
@@ -472,13 +468,12 @@ export const AlysisAuthPlugin = async (_ctx, _options) => {
             {
               type: "text",
               key: "code",
-              message: "批准完成后浏览器跳到的那条 URL（可留空，留空则自动等待批准）",
-              placeholder: "https://alysiscode.com/login/success?code=... 或 AB12-CD34",
+              message: "本次登录码（点继续后显示；留空则自动等待批准）",
+              placeholder: "AB12-CD34",
             },
           ]
         },
       },
-
       // API key 方式（可选）
       // {
       //   type: "api",
