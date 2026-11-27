@@ -75,19 +75,26 @@ test("config() 未登录也声明了模型，且 modalities / 五个 input 布�
   }
 })
 
-test("authorize 是 async 函数，且立刻返回（不 await 登录）", async () => {
+// 宿主读的是 **method.callback**（host.js 的 authorize / callback 一对），
+// 不是 authorize() 返回值里的 callback。写错成后者时宿主拿到 undefined，报
+// 「sign-in gave nothing to finish it with」，或者点了继续毫无反应 ——
+// 本仓库的三条登录方式曾经全犯这个错，所以这条断言必须钉在真实位置上。
+test("每条登录方式：callback 在方法对象上，authorize 立刻返回且不塞 callback", async () => {
   const plugin = await AlysisAuthPlugin({ client: {} })
-  const method = plugin.auth.methods[0]
-  assert.equal(typeof method.authorize, "function")
-  assert.equal(method.authorize.constructor.name, "AsyncFunction")
+  for (const method of plugin.auth.methods) {
+    assert.equal(typeof method.authorize, "function", `${method.label} 缺 authorize`)
+    assert.equal(method.authorize.constructor.name, "AsyncFunction")
+    assert.equal(typeof method.callback, "function", `${method.label} 的 callback 必须挂在方法对象上`)
 
-  // 铁律 2：authorize 必须立刻返回一个带 callback 的 flow，不能等用户。
-  const started = Date.now()
-  const flow = await method.authorize(undefined)
-  assert.ok(Date.now() - started < 1_000, "authorize 不能阻塞")
-  assert.equal(typeof flow.callback, "function")
-  assert.equal(typeof flow.url, "string")
-  assert.equal(flow.opened, true)
+    const started = Date.now()
+    const flow = await method.authorize(undefined)
+    assert.ok(Date.now() - started < 1_000, "authorize 不能阻塞")
+    assert.equal(typeof flow.url, "string")
+    assert.equal(flow.opened, true)
+    // 塞进返回值里是错的：宿主不会去那里找
+    assert.equal(flow.callback, undefined, "callback 不能放进 authorize 的返回值")
+    assert.equal(flow.type, undefined, "authorize 的返回值不是登录结果")
+  }
 })
 
 test("loader() 给 baseURL / apiKey / fetch；未登录返回空对象", async () => {
