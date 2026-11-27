@@ -1,0 +1,126 @@
+# 更新记录
+
+> 每个版本一节，**一条一行**，说用户能感知的变化。
+> 格式与规矩见 [UPDATING.md](./UPDATING.md)。
+
+## 0.1.16 — 2026-11-17
+
+**文档与报错文案：删掉「必须先跑 alysis2api」的残留说法**
+
+- README / docs/internals / registry-entry / package.json 描述不再要求安装或启动本机 alysis2api —— 插件自 0.1.9 起每账号直连上游，装完登录即可，没有要额外启动的进程
+- 上游连不上时的 503 文案不再说「本地反代没有运行」，改为「连不上上游网关，检查网络或代理」
+- `src/context.mjs` 的 `BASE` 常量改为上游网关地址（原值是 8788 本地反代，已不再使用）
+
+## 0.1.15 — 2026-11-04
+
+**与 0.1.14 内容相同，仅重发确认 latest**
+
+- 新包名首版在 npm 侧经 staged 占位延迟上线（registry 先出现 `0.0.0-stage` 占位，约 2 分钟后 0.1.14 生效）
+- 本版没有代码改动；装 0.1.15 与 0.1.14 等价
+
+## 0.1.14 — 2026-11-04
+
+**包名改为 `magpie-alysis-code`**
+
+- 原包名 `magpie-alysis-auth` 因脱敏整包撤下，npm 对同名包锁 24 小时；改用新名发布
+- 安装命令变为 `magpie plugin add magpie-alysis-code`；从源码安装仍是 `github:MYCF711/magpie-alysis-auth`
+- 代码、provider id（`alysis`）、卡片显示名（Alysis Code 免费额度）都不变；装过旧包的机器重装一次即可
+
+## 0.1.13 — 2026-11-04
+
+**出站 UA 全部换成官方客户端 UA（同步脚手架 0.3.10 的坑表第 38 条）**
+
+- 上游网关按 `<product>/<version>` 形态识别「第三方客户端」，命中即回
+  `403 {"error_code":"TM.00000001","error_msg":"网络繁忙，请稍后重试"}`；而 magpie 给插件宿主
+  的 UA 固定是 `magpie/<version>`，插件不显式覆盖就原样透传，同样命中
+- 本仓库所有打上游的出站点改为显式带**官方客户端** UA；不再出现 `<包名>/<版本号>`、
+  `node`、`Bun/…` 或截断的 Mozilla
+- 新增 `scripts/check-ua.mjs`（`npm run check:ua`，0 = 合规）、`AGENTS.md` 坑表第 29 条、
+  `CHECKLIST.md` 的 UA 勾选项
+
+## 0.1.12 — 2026-11-03
+
+**变更**
+
+- 去掉 deepseek-chat / deepseek-reasoner 别名：三个名字指向同一个上游模型，容易让人以为不是同一个；只保留 deepseek-flash
+## 0.1.11 — 2026-11-03
+
+**修复**
+
+- 别名模型显示名不再继承目标：deepseek-chat / deepseek-reasoner 分别显示 DeepSeek Chat / DeepSeek Reasoner，列表里不再出现三个「DeepSeek V4.1 Flash」
+## 0.1.10 — 2026-11-03
+
+**修复**
+
+- 直连上游后模型列表只剩 4 个：补回 `deepseek-chat` / `deepseek-reasoner` 别名（模型名保留给用户选，`api.id` 指向 `deepseek-flash`）
+
+## 0.1.9 — 2026-11-03
+
+**变更**
+
+- 每账号直连上游，不再经过本机 alysis2api：模型请求用该账号自己的 `slk_` key，额度查 `account-status`、模型目录查上游 `/models` —— 多个 Alysis 账号不再串号（之前所有卡片都显示第一张卡的额度）
+
+## 0.1.8 — 2026-11-03
+
+**变更**
+
+- 去掉 `auth.single`：不同的 Alysis 账号可以并存，第二个登录不再顶掉第一个；同一账号的重复登录由 accountId（account-status 的 display_name）合并
+
+## 0.1.7 — 2026-11-03
+
+**修复**
+
+- 同一个 Alysis 账号重复登录会并排出现两张卡（`MYCF711` 和 `Signed in (xxxxxx)`）：`auth.single: true`，并且登录时从 account-status 读取 `display_name` 作为 accountId，同名账号自动合并
+
+## 0.1.6 — 2026-11-03
+
+**回退**
+
+- 撤销「隔离浏览器默认到注册」：登录页不再自动切换，登录/注册交给用户自己点 —— 锁定注册会让已注册用户点「登录」后被反复弹回注册页
+- 保留：登录成功后自动回到 /activate 填设备码；面板 URL 仍是正常地址
+## 0.1.5 — 2026-11-02
+
+**修复**
+
+- 登录面板不再显示 `about:blank`：主方式显示 `/account`，隔离方式显示 `/login?lang=auto`（`opened: true` 仍然阻止 magpie 打开默认浏览器）
+- 隔离方式说明补充：不要用「重新打开」，那条会用默认浏览器
+## 0.1.4 — 2026-11-02
+
+**改进**
+
+- 隔离浏览器直接打开 /login?lang=auto，并自动切到「注册」视图（隔离 profile 没有登录态，首次使用的人大概率还没账号；已有账号点一下「已经有帐户？登录」即可）
+- 登录成功后自动回到 /activate 并填入设备码，用户只需要完成注册或登录这一步
+## 0.1.3 — 2026-11-02
+
+**修复**
+
+- 隔离浏览器关闭后后台重试删除临时 profile（Windows 文件句柄释放慢会残留目录）
+- 浏览器探测不再把 reg 查询的 stderr 打进插件日志
+## 0.1.2 — 2026-11-02
+
+**新增**
+
+- 登录方式「在隔离浏览器里登录」：设备码 + 一次性 Chromium user-data-dir 打开 `/activate`，不复用默认浏览器凭证；窗口关闭即删除 profile
+- 默认登录方式的 url 改为 `about:blank`：magpie 不会顺手打开默认浏览器（GUI 也一样）
+
+**修复**
+
+- 设备码轮询间隔支持亚秒值（测试用），生产仍按服务端 interval
+
+## 0.1.1 — 2026-11-02
+
+**修复**
+
+- 额度读不到时不再抛 `QuotaShapeError` 打死 usage 钩子：返回 `error` 让卡片显示原因，账号在路由里保持可用（之前会导致 magpie 记 "used 必填" 并丢弃这个 provider 的额度）
+
+## 0.1.0 — 2026-11-02
+
+**初始版本**
+
+- provider id = `alysis`；从本机 Alysis Code 客户端导入已登录的免费账号（`slk_` key），不用粘贴 key
+- 模型目录从本机 alysis2api 的 `/v1/models` 自动发现（上游有多少就列多少），静态表兜底 6 个
+- 按上游协议分流：DeepSeek / GLM 走 `@ai-sdk/openai-compatible`，GPT-6 Luna 走 `@ai-sdk/openai`（Responses），Claude Haiku 走 `@ai-sdk/anthropic`（Messages）
+- 额度卡片：5 小时 / 7 天公平使用窗口 + 免费余额，来自上游 account-status
+- 签到：无（免费额度按月自动 refill，不是每日签到）
+- 依赖本机 alysis2api 反代（`http://127.0.0.1:8788/v1`）；没启动时返回 503 和启动提示，不静默失败
+- 首发：npm `magpie-alysis-auth@0.1.0` + GitHub Release
