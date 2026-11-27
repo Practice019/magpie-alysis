@@ -271,217 +271,130 @@ export const AlysisAuthPlugin = async (_ctx, _options) => {
     refreshLead: REFRESH_LEAD_MS,
 
     // ═══ ② 登录 ═══════════════════════════════════════════════════
+    // ⚠ 宿主契约（host.js:authorize/callback）：`callback` 必须挂在**登录方式对象**上，
+    //   与 authorize 平级。authorize() 只返回 { url, instructions, method, opened }；
+    //   把 callback 塞进 authorize 的返回值里，宿主拿到的是 undefined ——
+    //   报 "sign-in gave nothing to finish it with"，或者点继续就静默失败。
     methods: [
       {
         type: "oauth",
-        label: `Sign in with ${PROVIDER_NAME}`,
+        label: `使用本机 Alysis Code 登录态（${PROVIDER_NAME}）`,
 
-        // 可选：登录前的问题
-        prompts: [
-          // {
-          //   type: "select",
-          //   key: "region",
-          //   message: "Region",
-          //   options: [
-          //     { label: "Global", value: "global" },
-          //     { label: "China", value: "cn", hint: "xxx.cn" },
-          //   ],
-          // },
-          // {
-          //   type: "text",            // 或 "password"（不显示输入）
-          //   key: "team",
-          //   message: "Team id",
-          //   placeholder: "t-...",
-          //   when: { key: "region", op: "eq", value: "global" },
-          //   validate: (v) => (/^t-/.test(v) ? undefined : "Starts with t-"),
-          // },
-        ],
-
-        /**
-         * ⚠ 必须立刻返回，不能在这里 await 用户完成登录。
-         *   否则和 magpie 双向死锁。真正等登录的是 callback()。
-         *
-         * inputs 只在有 prompts 时传入，否则是 undefined。
-         */
-        async authorize(_inputs) {
-          // 铁律 2：authorize 立刻返回；读本机登录态放在 callback 里做。
-          // url 只是给面板显示一个正常地址；opened: true 让 magpie 不要打开它
-          // （打开默认浏览器会复用用户日常浏览器里的 alysis 会话）。
+        // 本机客户端已经登录过：零交互，直接读它的 slk_ key。
+        async authorize() {
+          // 铁律 2：立刻返回。读盘在 callback 里做。
           return {
             url: "https://alysiscode.com/account",
+            method: "auto",
+            opened: true, // 不打开浏览器：复用本机客户端登录态
             instructions:
-              "本插件复用本机 Alysis Code 客户端已经登录的免费账号（slk_ key），不用输入任何东西，也不会打开浏览器。请确认 Alysis Code 已登录，然后点继续。",
-            method: "auto", // "auto" | "code"（code = 用户要粘贴授权码）
-            opened: true, // true = 插件自己已经开了页面，magpie 别再开
+              "本插件复用本机 Alysis Code 客户端已登录的免费账号（slk_ key），不用输入任何东西，也不会打开浏览器。请先确认 Alysis Code 已登录，然后点继续。本机没有客户端时请改用「手工批准登录码」。",
+          }
+        },
 
-            async callback() {
-              try {
-                const found = readLocalAlysisKey()
-                if (!found) {
-                  return {
-                    type: "failed",
-                    error:
-                      "没有找到本机 Alysis Code 的登录凭证。请先打开 Alysis Code 并用免费账号登录（或运行 `alysis login`），然后重试。",
-                  }
-                }
-                return {
-                  type: "success",
-                  access: found.key,
-                  // slk_ key 长期有效、不轮换；refresh 只是为了让字段齐全。
-                  refresh: found.key,
-                  // slk_ key 不会过期：给一个远期时间，避免 magpie 反复触发续期。
-                  expires: Date.now() + 365 * 24 * 3600 * 1000,
-
-                  // ⚠ accountId 是「名字」，不是身份：本机登录态里没有用户名，
-                  //   按规范返回空串（宿主会回退成供应商名），内部指纹只进 uid。
-                  accountId: await resolveAccountId(found.key),
-                  uid: fingerprint(found.key),
-                }
-              } catch (e) {
-                return { type: "failed", error: `读取 Alysis Code 登录态失败：${e?.message ?? e}` }
+        async callback() {
+          try {
+            const found = readLocalAlysisKey()
+            if (!found) {
+              return {
+                type: "failed",
+                error:
+                  "没有找到本机 Alysis Code 的登录凭证。请先打开 Alysis Code 并用免费账号登录（或运行 `alysis login`），或者改用「手工批准登录码」。",
               }
-            },
+            }
+            return await successAuth(found.key)
+          } catch (e) {
+            return { type: "failed", error: `读取 Alysis Code 登录态失败：${e?.message ?? e}` }
           }
         },
       },
 
-      // 备选：隔离浏览器 + 设备码（本机 Alysis Code 没登录时用）。
-      // 绝不用默认浏览器：设备码由插件发起，批准页在一个一次性的 Chromium
-      // user-data-dir 里打开，关闭后整个 profile 删掉。
       {
         type: "oauth",
         label: `在隔离浏览器里登录（${PROVIDER_NAME}）`,
 
+        // 本机有图形界面、装了 Chromium 时用；开一次性 profile，不碰日常浏览器。
         async authorize() {
-          // 铁律 2：立刻返回。设备码与浏览器都在 callback 里。
           return {
-            url: "https://alysiscode.com/login?lang=auto", // 只用于面板显示；opened: true 阻止 magpie 打开它
-            opened: true,
-            instructions:
-              "会打开一个一次性的隔离浏览器窗口（独立配置，不会复用默认浏览器里的登录态），并自动切到注册页。请在窗口里完成注册/登录，插件会自动填好设备码；窗口关闭后自动完成。请不要用「重新打开」——那条会用默认浏览器。",
+            url: "https://alysiscode.com/login?lang=auto",
             method: "auto",
+            opened: true, // 由插件自己开隔离窗口，别让 magpie 开默认浏览器
+            instructions:
+              "会打开一个一次性的隔离浏览器窗口（独立配置，不会复用日常浏览器的登录态）。请在窗口里完成登录，插件会自动填好设备码；窗口关闭后自动完成。需要本机有图形界面和 Chromium 内核浏览器。",
+          }
+        },
 
-            async callback() {
-              let win = null
-              try {
-                const grant = await startDeviceGrant()
-                const activate = approvalUrl(grant.userCode)
-                // 隔离窗口直接落在登录页，并且默认切到「注册」——隔离 profile 里没有
-                // 任何登录态，首次使用的人大概率还没有账号。已有账号的人点一下「登录」即可。
-                win = await openIsolatedBrowser("https://alysiscode.com/login?lang=auto", {
-                  prepare: async (page) => {
-                    const state = await page.evaluate(`
-                      (() => {
-                        const ACTIVATE = ${JSON.stringify(activate)};
-                        const CODE = ${JSON.stringify(grant.userCode)};
-                        const path = location.pathname;
-                        const nodes = Array.from(document.querySelectorAll("a,button"));
-                        const textOf = (n) => (n.textContent || "").trim();
-
-                        // 1) 还在加载 / 空白页：等
-                        if (!path || path === "/" || path === "blank") return "wait";
-
-                        // 2) 批准页：填码并提交
-                        if (path.startsWith("/activate")) {
-                          const input = document.querySelector('input[name="code"]');
-                          const submit = document.querySelector('[data-activate-submit]');
-                          if (input) {
-                            if (input.value !== CODE) {
-                              input.value = CODE;
-                              input.dispatchEvent(new Event("input", { bubbles: true }));
-                              input.dispatchEvent(new Event("change", { bubbles: true }));
-                            }
-                            if (submit && !submit.disabled) { submit.click(); return "done"; }
-                          }
-                          return "wait";
+        async callback() {
+          let win = null
+          try {
+            const grant = await startDeviceGrant()
+            const activate = approvalUrl(grant.userCode)
+            win = await openIsolatedBrowser("https://alysiscode.com/login?lang=auto", {
+              prepare: async (page) => {
+                const state = await page.evaluate(`
+                  (() => {
+                    const ACTIVATE = ${JSON.stringify(activate)};
+                    const CODE = ${JSON.stringify(grant.userCode)};
+                    const path = location.pathname;
+                    if (!path || path === "/" || path === "blank") return "wait";
+                    if (path.startsWith("/activate")) {
+                      const input = document.querySelector('input[name="code"]');
+                      const submit = document.querySelector('[data-activate-submit]');
+                      if (input) {
+                        if (input.value !== CODE) {
+                          input.value = CODE;
+                          input.dispatchEvent(new Event("input", { bubbles: true }));
+                          input.dispatchEvent(new Event("change", { bubbles: true }));
                         }
-
-                        // 3) 登录页：什么都不点。登录还是注册由用户自己选 ——
-                        //    锁定注册会让人点「登录」后被反复弹回注册页。
-                        if (path.startsWith("/login") || path.startsWith("/signup") || path.startsWith("/register")) {
-                          return "wait";
-                        }
-
-                        // 4) 登录成功后落在账户页：回到批准页填码
-                        location.href = ACTIVATE;
-                        return "wait";
-                      })()
-                    `)
-                    return state === "done" ? "done" : "wait"
-                  },
-                })
-                const key = await pollForKey(grant)
-                if (!/^slk_/.test(key)) {
-                  return { type: "failed", error: "服务端返回的 key 不是 slk_ 开头，拒绝保存" }
-                }
-                return {
-                  type: "success",
-                  access: key,
-                  refresh: key,
-                  expires: Date.now() + 365 * 24 * 3600 * 1000,
-                  accountId: await resolveAccountId(key),
-                  uid: fingerprint(key),
-                }
-              } catch (e) {
-                return { type: "failed", error: `隔离浏览器登录失败：${e?.message ?? e}` }
-              } finally {
-                win?.close()
-              }
-            },
+                        if (submit && !submit.disabled) { submit.click(); return "done"; }
+                      }
+                      return "wait";
+                    }
+                    if (path.startsWith("/login") || path.startsWith("/signup") || path.startsWith("/register")) {
+                      return "wait";
+                    }
+                    location.href = ACTIVATE;
+                    return "wait";
+                  })()
+                `)
+                return state === "done" ? "done" : "wait"
+              },
+            })
+            const key = await pollForKey(grant)
+            return await successAuth(key)
+          } catch (e) {
+            return { type: "failed", error: `隔离浏览器登录失败：${e?.message ?? e}` }
+          } finally {
+            win?.close()
           }
         },
       },
 
-      // ③ 手工完成设备码批准（照小浣熊插件的 manualSignIn 做法：本机不起浏览器）。
-      //
-      // 为什么需要它：magpie 常常跑在无头 Linux 上，浏览器在用户的 Windows 机器上。
-      // 「隔离浏览器」那条路要在本机开 Chromium，那种机器上没有；而设备码流程没有
-      // 「网页 code 换 key」的端点（实测 /login/exchange、/oauth/token 都是 404，
-      // 只有 /device-token 可用），所以网页登录本身不能直接产出 key。
-      // 可行的路径是：本机拿 code → 用户在任意设备批准 → 本机轮询 device-token 取 key。
       {
         type: "oauth",
         label: `手工批准登录码（${PROVIDER_NAME}）`,
 
+        // 无头 Linux 上的正路：本机不打开任何窗口，批准在别的设备上完成。
         async authorize() {
-          // 铁律 2：立刻返回。码在 callback 里才生成。
           return {
             url: buildLoginUrl(),
             method: "auto",
-            opened: true, // 本机可能没有浏览器，别让 magpie 在本机打开
+            opened: true, // 本机可能没有浏览器
             instructions:
               "点继续后会生成一个登录码。把码复制到任意一台有浏览器的设备（Windows / Mac / 手机都行），打开 https://alysiscode.com/activate 登录并批准。批准由服务端判定，本机不需要浏览器，批准后自动完成。",
-            async callback() {
-              try {
-                const grant = await startDeviceGrant()
-                const key = await pollForKey(grant)
-                return await successAuth(key)
-              } catch (e) {
-                return { type: "failed", error: `手工批准登录失败：${e?.message ?? e}` }
-              }
-            },
           }
         },
 
-        get prompts() {
-          return [
-            {
-              type: "text",
-              key: "code",
-              message: "本次登录码（点继续后显示；留空则自动等待批准）",
-              placeholder: "AB12-CD34",
-            },
-          ]
+        async callback() {
+          try {
+            const grant = await startDeviceGrant()
+            const key = await pollForKey(grant)
+            return await successAuth(key)
+          } catch (e) {
+            return { type: "failed", error: `手工批准登录失败：${e?.message ?? e}` }
+          }
         },
       },
-      // API key 方式（可选）
-      // {
-      //   type: "api",
-      //   label: `${PROVIDER_NAME} API key`,
-      //   placeholder: "xxx-...",
-      //   // 没有 authorize → 原样保存 { type: "api", key }
-      //   // 有 authorize(inputs) → 返回 { type: "success", key }
-      // },
     ],
 
     // ═══ ③ 续期 ═══════════════════════════════════════════════════
