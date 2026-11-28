@@ -1,5 +1,8 @@
 # Alysis Code 免费额度 for magpie
 
+> **改这个插件前先读 [AGENTS.md](./AGENTS.md)** —— 尤其是「不要重启 magpie」那一条。
+
+
 把 Alysis Code 免费账号里的 DeepSeek、GLM、GPT-6、Claude 接进 magpie：**不充值、不粘贴 API key**，插件直接复用本机 Alysis Code 客户端已经登录的免费账号。
 
 ```text
